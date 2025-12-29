@@ -6,22 +6,35 @@ A JAX-based library for numerical integration of dynamical systems.
 
 ## Features
 
-<!-- - **ODE Solvers**: Ordinary Differential Equations
-  - Euler method
-  - Runge-Kutta methods (RK2, RK4)
-  - Adaptive step-size methods
+- **ODE Integration**: Ordinary Differential Equations
+  - Efficient loop-based integrators with JIT compilation
+  - Full support for `jax.vmap` for parallel trajectory computation
+  
+- **SDE Integration**: Stochastic Differential Equations  
+  - `make_sde()`: Integration with pre-generated noise arrays
+  - `make_sde_auto()`: Automatic noise generation from random keys
+  - Euler-Maruyama scheme
+  - Fully reproducible with random seeds
 
-- **DDE Solvers**: Delay Differential Equations
-  - Method of steps
-  - RK methods with history interpolation
+- **DDE Integration**: Delay Differential Equations
+  - Support for fixed delays
+  - History function interpolation
 
-- **SDE Solvers**: Stochastic Differential Equations
-  - Euler-Maruyama method
-  - Milstein method
-  - Runge-Kutta SDE methods
+- **SDDE Integration**: Stochastic Delay Differential Equations
+  - Combined stochastic and delay dynamics
 
-- **SDDE Solvers**: Stochastic Delay Differential Equations
-  - Combined approaches for stochastic systems with delays -->
+- **Continuation Methods**: Parameter continuation for bifurcation analysis
+
+- **Configuration Utilities**: Easy control over JAX settings
+  - `configure_jax()`: Global configuration
+  - `precision_context()`: Temporary precision changes
+  - `print_jax_config()`: Diagnostic information
+
+- **JAX-Native**: 
+  - JIT compilation for speed
+  - Automatic differentiation ready
+  - GPU/TPU compatible
+  - Pure functional approach
 
 ## Installation
 
@@ -36,46 +49,39 @@ pip install -e ".[dev]"
 
 ## Quick Start
 
-### Basic ODE Example
-
 ```python
 import jax.numpy as jnp
-from vbjax_dynamics.ode import RK4Solver
+from jax import random, vmap
+from vbjax_dynamics.loops import make_sde_auto
 
-# Define your system
-def f(t, y, args):
-    return -y
+# Define Ornstein-Uhlenbeck process
+def drift(x, p):
+    return -p[0] * x  # -theta * x
 
-# Solve
-solver = RK4Solver(f)
-t_span = (0.0, 10.0)
-y0 = jnp.array([1.0])
-t, y = solver.solve(y0, t_span, dt=0.01)
+def diffusion(x, p):
+    return p[1]  # sigma
+
+# Create integrator
+dt = 0.01
+step, loop = make_sde_auto(dt, drift, diffusion)
+
+# Single trajectory
+x0 = 2.0
+params = (1.0, 0.5)  # (theta, sigma)
+n_steps = 1000
+key = random.PRNGKey(42)
+
+trajectory = loop(x0, n_steps, params, key)
+print(f"Final value: {trajectory[-1]:.4f}")
+
+# Multiple trajectories in parallel with vmap
+n_traj = 100
+keys = random.split(key, n_traj)
+trajectories = vmap(lambda k: loop(x0, n_steps, params, k))(keys)
+print(f"Mean: {jnp.mean(trajectories[:, -1]):.4f}")
 ```
 
-### Configuration
-
-By default, vbjax_dynamics uses JAX's default 32-bit precision. You can configure this:
-
-```python
-import vbjax_dynamics
-
-# Option 1: Configure for the entire session
-vbjax_dynamics.configure_jax(enable_x64=True)
-
-# Option 2: Use a context manager for temporary changes
-with vbjax_dynamics.precision_context(enable_x64=True):
-    # High-precision computation here
-    result = my_solver.solve(...)
-
-# Option 3: Set it globally yourself before importing
-import jax
-jax.config.update("jax_enable_x64", True)
-import vbjax_dynamics
-
-# Check current configuration
-vbjax_dynamics.print_jax_config()
-```
+For more examples, see the `examples/` directory.
 
 ## Acknowledgments
 
