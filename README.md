@@ -86,7 +86,6 @@ For more examples, see the [`examples/`](examples/) directory.
 ## Documentation
 
 - **[Examples and Tutorials](examples/README.md)**: Complete guide with detailed examples for ODE, SDE, DDE, and SDDE integration
-- **[Testing Guide](tests/README.md)**: Information about running and writing tests
 - **[Acknowledgments](ACKNOWLEDGMENTS.md)**: Credits and attribution
 
 ## Acknowledgments
