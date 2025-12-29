@@ -1,5 +1,7 @@
 # vbjax_dynamics
 
+[![Tests](https://github.com/Ziaeemehr/vbjax_dynamics/actions/workflows/tests.yml/badge.svg)](https://github.com/Ziaeemehr/vbjax_dynamics/actions/workflows/tests.yml)
+
 A JAX-based library for numerical integration of dynamical systems.
 
 **Note:** This package contains code adapted from [vbjax](https://github.com/ins-amu/vbjax) by INS-AMU. The core integration functions in `loops.py` are derived from vbjax's implementation.
