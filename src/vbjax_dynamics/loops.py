@@ -445,51 +445,71 @@ def make_sdde(dt, nh, dfun, gfun, unroll=1, zero_delays=False, adhoc=None):
 
     """
 
-    heun = True
+    use_heun = True
     sqrt_dt = jnp.sqrt(dt)
-    nh = int(nh)
+    delay_steps = int(nh)
 
-    # TODO nh == 0: return make_sde(dt, dfun, gfun) etc
+    # Handle zero delay case: reduce to regular SDE
+    if delay_steps == 0:
+        # Create SDE version of dfun that ignores buffer and time arguments
+        def sde_dfun(x, p):
+            # For zero delay, buffer is irrelevant, time index is irrelevant
+            return dfun(None, x, 0, p)
+        
+        sde_step, sde_loop = make_sde(dt, sde_dfun, gfun, adhoc=adhoc, return_euler=False, unroll=unroll)
+        
+        def step(x_and_t, noise, p):
+            x, t = x_and_t
+            return sde_step(x, noise, p)
+        
+        def loop(buf, p, t=0):
+            x0 = buf[0]  # extract initial condition from buffer
+            noises = buf[1:]  # extract noise samples
+            trajectory = sde_loop(x0, noises, p)
+            # Return dummy buffer and trajectory to maintain interface
+            return buf, trajectory
+        
+        return step, loop
 
     # gfun is a numerical value or a function f(x,p) -> sig
     if not hasattr(gfun, "__call__"):
-        sig = gfun
-        gfun = lambda *_: sig
+        diffusion_coeff = gfun
+        gfun = lambda *_: diffusion_coeff
 
     if adhoc is None:
         adhoc = lambda x, p: x
 
-    def step(buf_t, z_t, p):
-        buf, t = buf_t
-        x = tmap(lambda buf: buf[nh + t], buf)
-        noise = _compute_noise(gfun, x, p, sqrt_dt, z_t)
-        d1 = dfun(buf, x, nh + t, p)
-        xi = tmap(lambda x, d, n: x + dt * d + n, x, d1, noise)
-        xi = adhoc(xi, p)
-        if heun:
+    def step(buf_time, noise, p):
+        buf, time_idx = buf_time
+        x_curr = tmap(lambda buf: buf[delay_steps + time_idx], buf)
+        noise_term = _compute_noise(gfun, x_curr, p, sqrt_dt, noise)
+        drift1 = dfun(buf, x_curr, delay_steps + time_idx, p)
+        x_pred = tmap(lambda x, d, n: x + dt * d + n, x_curr, drift1, noise_term)
+        x_pred = adhoc(x_pred, p)
+        if use_heun:
             if zero_delays:
                 # severe performance hit (5x+)
-                buf = tmap(lambda buf, xi: buf.at[nh + t + 1].set(xi), buf, xi)
-            d2 = dfun(buf, xi, nh + t + 1, p)
-            nx = tmap(
-                lambda x, d1, d2, n: x + dt * 0.5 * (d1 + d2) + n, x, d1, d2, noise
+                buf = tmap(lambda buf, xi: buf.at[delay_steps + time_idx + 1].set(xi), buf, x_pred)
+            drift2 = dfun(buf, x_pred, delay_steps + time_idx + 1, p)
+            x_new = tmap(
+                lambda x, d1, d2, n: x + dt * 0.5 * (d1 + d2) + n, x_curr, drift1, drift2, noise_term
             )
-            nx = adhoc(nx, p)
+            x_new = adhoc(x_new, p)
         else:
-            nx = xi
-        # jax.debug.print("buf len is {b}, going to write to {i}", b=buf.shape[0], i=nh+t+1)
-        buf = tmap(lambda buf, nx: buf.at[nh + t + 1].set(nx), buf, nx)
-        return (buf, t + 1), nx
+            x_new = x_pred
+        # jax.debug.print("buf len is {b}, going to write to {i}", b=buf.shape[0], i=delay_steps+time_idx+1)
+        buf = tmap(lambda buf, nx: buf.at[delay_steps + time_idx + 1].set(nx), buf, x_new)
+        return (buf, time_idx + 1), x_new
 
     # @jax.jit
     def loop(buf, p, t=0):
         "xt is the buffer, zt is (ts, zs), p is parameters."
         op = lambda xt, tz: step(xt, tz, p)
-        dWt = tmap(
-            lambda b: b[nh + 1 :], buf
-        )  # history is buf[nh:], current state is buf[nh], randn samples are buf[nh+1:]
-        (buf, _), nxs = jax.lax.scan(op, (buf, t), dWt, unroll=unroll)
-        return buf, nxs
+        noises = tmap(
+            lambda b: b[delay_steps + 1 :], buf
+        )  # history is buf[delay_steps:], current state is buf[delay_steps], randn samples are buf[delay_steps+1:]
+        (buf, _), traj = jax.lax.scan(op, (buf, t), noises, unroll=unroll)
+        return buf, traj
 
     return step, loop
 

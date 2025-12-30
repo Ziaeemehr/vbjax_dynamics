@@ -4,6 +4,8 @@
 
 A JAX-based library for numerical integration of dynamical systems.
 
+**[Examples and Tutorials](examples/README.md)**
+
 **Note:** This package contains code adapted from [vbjax](https://github.com/ins-amu/vbjax) by INS-AMU. The core integration functions in `loops.py` are derived from vbjax's implementation.
 
 ## Features

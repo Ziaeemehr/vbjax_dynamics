@@ -11,7 +11,7 @@ import jax.numpy as jnp
 from jax import random
 import numpy as np
 from scipy.integrate import solve_ivp
-from vbjax_dynamics.loops import make_ode, make_sde
+from vbjax_dynamics.loops import make_ode, make_sde, make_sdde, randn
 
 jax.config.update("jax_enable_x64", True)
 
@@ -192,3 +192,130 @@ def test_convergence_order():
         f"Convergence ratio {avg_ratio:.2f} differs from expected {expected_ratio:.2f} by more than {tolerance:.2f}"
 
 
+def test_sdde_delayed_exponential():
+    """Test SDDE: dx/dt = -x(t-τ) (deterministic delay differential equation)"""
+    
+    dt = 0.01
+    tau = 0.5  # delay
+    nh = int(tau / dt)  # delay steps
+    t_max = 2.0
+    n_steps = int(t_max / dt)
+    
+    # Initial condition
+    x0 = 1.0
+    buf_size = nh + 1 + n_steps
+    buf = jnp.ones(buf_size) * x0
+    
+    # Drift function: dx/dt = -x(t-τ)
+    def dfun(xt, x, t, p):
+        delayed_x = xt[t - nh]
+        return -delayed_x
+    
+    # Create SDDE integrator (deterministic, gfun=0)
+    step, loop = make_sdde(dt, nh, dfun, gfun=0.0)
+    
+    # Integrate
+    final_buf, trajectory = loop(buf, None)
+    solution = trajectory[-n_steps:]
+    
+    # Basic sanity checks
+    assert solution.shape == (n_steps,), f"Expected shape ({n_steps},), got {solution.shape}"
+    assert jnp.all(jnp.isfinite(solution)), "Solution contains non-finite values"
+    
+    # For this equation with constant initial history, the solution should eventually
+    # become smaller in magnitude (though not necessarily monotonically)
+    assert solution[-1] < x0, f"Final value {solution[-1]} should be less than initial {x0}"
+    assert jnp.abs(solution[-1]) < 0.5, f"Final value {solution[-1]} should decay significantly"
+
+
+def test_sdde_stochastic():
+    """Test SDDE with stochastic noise"""
+    
+    dt = 0.01
+    tau = 0.2
+    nh = int(tau / dt)
+    sigma = 0.1  # noise strength
+    t_max = 1.0
+    n_steps = int(t_max / dt)
+    n_trajectories = 3
+    
+    # Initial condition
+    x0 = 1.0
+    buf_size = nh + 1 + n_steps
+    
+    # Drift function: dx/dt = -x(t-τ)
+    def dfun(xt, x, t, p):
+        delayed_x = xt[t - nh]
+        return -delayed_x
+    
+    # Diffusion function: constant additive noise
+    def gfun(x, p):
+        return sigma
+    
+    # Create SDDE integrator
+    step, loop = make_sdde(dt, nh, dfun, gfun)
+    
+    key = random.PRNGKey(123)
+    trajectories = []
+    
+    for i in range(n_trajectories):
+        # Generate noise
+        noise_key, key = random.split(key)
+        noise_samples = randn(n_steps, key=noise_key)
+        
+        # Setup buffer
+        buf = jnp.ones(buf_size) * x0
+        buf = buf.at[nh+1:].set(noise_samples)
+        
+        # Integrate
+        final_buf, trajectory = loop(buf, None)
+        solution = trajectory[-n_steps:]
+        trajectories.append(solution)
+    
+    trajectories = jnp.array(trajectories)
+    
+    # Basic checks
+    assert trajectories.shape == (n_trajectories, n_steps), f"Expected shape ({n_trajectories}, {n_steps}), got {trajectories.shape}"
+    assert jnp.all(jnp.isfinite(trajectories)), "Solutions contain non-finite values"
+    
+    # With noise, different trajectories should give different results
+    final_values = trajectories[:, -1]
+    assert jnp.std(final_values) > 1e-6, "Trajectories should differ due to noise"
+
+
+def test_sdde_zero_delay():
+    """Test SDDE with zero delay (nh=0) should behave like regular SDE"""
+    
+    dt = 0.01
+    nh = 0  # zero delay
+    t_max = 0.5
+    n_steps = int(t_max / dt)
+    
+    # Simple ODE: dx/dt = -x
+    def dfun(xt, x, t, p):
+        return -x  # no delay, just -x
+    
+    # No noise
+    gfun = 0.0
+    
+    # Initial condition
+    x0 = 1.0
+    buf_size = nh + 1 + n_steps
+    buf = jnp.ones(buf_size) * x0
+    
+    # Create SDDE integrator
+    step, loop = make_sdde(dt, nh, dfun, gfun)
+    
+    # Integrate
+    final_buf, trajectory = loop(buf, None)
+    solution = trajectory[-n_steps:]
+    
+    # Compare with analytical solution x(t) = exp(-t)
+    ts = jnp.arange(0, t_max, dt)
+    analytical = jnp.exp(-ts)
+    
+    # SDE trajectory starts from t=dt and has one extra point at t=t_max
+    # So compare trajectory[:-1] with analytical[1:]
+    # Should match very closely now that we use optimized SDE integrator for zero delay
+    max_error = jnp.max(jnp.abs(solution[:-1] - analytical[1:]))
+    assert max_error < 1e-4, f"Max error {max_error:.2e} too large for zero-delay case"
